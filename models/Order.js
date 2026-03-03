@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 
 const OrderItemSchema = new mongoose.Schema({
   product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+  variant: { type: mongoose.Schema.Types.ObjectId, ref: 'Product.variants', default: null },
   name: { type: String, required: true },
   sku: String,
   price: { type: Number, required: true },

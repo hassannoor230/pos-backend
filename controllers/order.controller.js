@@ -45,23 +45,50 @@ const createOrder = async (req, res, next) => {
 
     if (!items || !items.length) return sendResponse(res, 400, false, 'Order must have items');
 
-    // Validate stock and build order items
+    // Validate stock and build order items (supports variant products)
     const orderItems = [];
     for (const item of items) {
       const product = await Product.findById(item.product);
       if (!product || !product.isActive) return sendResponse(res, 400, false, `Product not found: ${item.product}`);
-      if (product.stock < item.quantity) {
-        return sendResponse(res, 400, false, `Insufficient stock for "${product.name}". Available: ${product.stock}`);
+
+      let name = product.name;
+      let sku = product.sku;
+      let price = product.price;
+      let availableStock = product.stock;
+      let taxRate = product.taxRate;
+      let variantId = null;
+
+      if (item.variant) {
+        variantId = item.variant;
+        const variant = product.variants.id(variantId) ||
+          product.variants.find(v => String(v._id) === String(variantId));
+        if (!variant || variant.isActive === false) {
+          return sendResponse(res, 400, false, `Variant not found or inactive: ${variantId}`);
+        }
+        if (variant.stock < item.quantity) {
+          return sendResponse(res, 400, false, `Insufficient stock for "${product.name} — ${variant.name}". Available: ${variant.stock}`);
+        }
+        // override values from variant
+        name = `${product.name} — ${variant.name}`;
+        sku = variant.sku;
+        price = variant.price;
+        availableStock = variant.stock;
+        // taxRate remains product level (could change if variants have own taxRate in future)
+      } else {
+        if (product.stock < item.quantity) {
+          return sendResponse(res, 400, false, `Insufficient stock for "${product.name}". Available: ${product.stock}`);
+        }
       }
 
       orderItems.push({
         product: product._id,
-        name: product.name,
-        sku: product.sku,
-        price: product.price,
+        variant: variantId,
+        name,
+        sku,
+        price,
         quantity: item.quantity,
-        taxRate: product.taxRate,
-        subtotal: +(product.price * item.quantity).toFixed(2),
+        taxRate,
+        subtotal: +(price * item.quantity).toFixed(2),
       });
     }
 
@@ -80,9 +107,16 @@ const createOrder = async (req, res, next) => {
       paymentMethod, amountPaid, change, note,
     });
 
-    // Deduct stock
+    // Deduct stock (handle variant stock separately)
     for (const item of orderItems) {
-      await Product.findByIdAndUpdate(item.product, { $inc: { stock: -item.quantity } });
+      if (item.variant) {
+        await Product.updateOne(
+          { _id: item.product, 'variants._id': item.variant },
+          { $inc: { 'variants.$.stock': -item.quantity } }
+        );
+      } else {
+        await Product.findByIdAndUpdate(item.product, { $inc: { stock: -item.quantity } });
+      }
     }
 
     await order.populate('cashier', 'name email');
